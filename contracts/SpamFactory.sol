@@ -15,23 +15,29 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ISpamFee} from "./interfaces/ISpamFee.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
+import {Bytes32AddressLib} from "solmate/src/utils/Bytes32AddressLib.sol";
+
 /// @dev MinimalProxy Factory making spam deliveries to recipients at a fee.
 /// @author 0x446576
 contract SpamFactory is ISpamFactory, ERC721, Ownable {
-    using Clones for address;
+    using Bytes32AddressLib for address;
+    using Bytes32AddressLib for bytes32;
     using Strings for uint256;
 
     /// @dev Spam Defender ERC-721.
-    IERC721 immutable defender;
-
-    /// @dev Implementation of a deployed Pound.
-    address immutable pound;
+    IERC721 public immutable defender;
 
     /// @dev Fee consumer of protocol-cost of making a delivery.
-    ISpamFee fee;
+    ISpamFee public fee;
 
     /// @dev Id of token being minted next.
-    uint256 tokenId;
+    uint256 public tokenId;
+
+    /// @dev Id of token being deployed.
+    uint256 public deliveringTokenId;
+
+    /// @dev Recipient of delivery.
+    address public deliveringTo;
 
     /// @dev URI per tokenId.
     mapping(uint256 => string) tokenIdToURI;
@@ -40,15 +46,11 @@ contract SpamFactory is ISpamFactory, ERC721, Ownable {
     mapping(uint256 => uint256) tokenIdToPounds;
 
     constructor(
-        address _pound,
         IERC721 _defender,
         ISpamFee _fee,
         string memory _name,
         string memory _symbol
     ) ERC721(_name, _symbol) {
-        /// @dev Factory implementation to deploy.
-        pound = _pound;
-
         /// @dev Defender preventing spam deliveries.
         defender = _defender;
 
@@ -73,11 +75,7 @@ contract SpamFactory is ISpamFactory, ERC721, Ownable {
     function resolve(uint256 _tokenId) public virtual {
         /// @dev Confirm the sender is the expected resolver.
         require(
-            _msgSender() ==
-                pound.predictDeterministicAddress(
-                    _tokenHash(_tokenId),
-                    address(this)
-                ),
+            _msgSender() == address(getSpam(_tokenId)),
             "Spam::resolve: Invalid sender."
         );
 
@@ -109,12 +107,39 @@ contract SpamFactory is ISpamFactory, ERC721, Ownable {
         uri = tokenIdToURI[_tokenId];
 
         /// @dev Confirm valid configuation.
-        require(bytes(uri).length > 0, "SpamFactory::tokenURI: Invalid token.");
+        if (bytes(uri).length == 0) uri = super.tokenURI(_tokenId);
+    }
+
+    function getSpam(uint256 _tokenId) public view returns (Spam spam) {
+        return
+            Spam(
+                payable(
+                    keccak256(
+                        abi.encodePacked(
+                            // Prefix:
+                            bytes1(0xFF),
+                            // Creator:
+                            address(this),
+                            // Salt:
+                            bytes32(_tokenId),
+                            // Bytecode hash:
+                            keccak256(
+                                abi.encodePacked(
+                                    // Deployment bytecode:
+                                    type(Spam).creationCode
+                                )
+                            )
+                        )
+                    ).fromLast20Bytes() // Convert the CREATE2 hash into an address.
+                )
+            );
     }
 
     function _setFee(ISpamFee _fee) internal {
+        /// @dev Set the new fee.
         fee = _fee;
 
+        /// @dev Emit the event for updated fees.
         emit FeeUpdated(_fee);
     }
 
@@ -133,27 +158,19 @@ contract SpamFactory is ISpamFactory, ERC721, Ownable {
         /// @dev Weight of parcel already established.
         require(tokenIdToPounds[_tokenId] == 0, "Spam: Token already heavy.");
 
+        /// @dev Load the hotslots.
+        deliveringTokenId = _tokenId;
+        deliveringTo = _to;
+
         /// @dev Deploy contract to the same address.
-        address poundAddress = pound.cloneDeterministic(_tokenHash(_tokenId));
-
-        /// @dev Reference the spam to initialize it.
-        Spam spam = Spam(poundAddress);
-
-        /// @dev  Pseudo-random number for pounds of delivery.
-        uint96 pounds = 1 +
-            (uint96(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(msg.sender, tokenId, block.coinbase)
-                    )
-                )
-            ) % 4999);
-
-        /// @dev Initialize the delivery.
-        spam.initialize(_to, _tokenId, pounds);
+        Spam spam = new Spam{salt: bytes32(_tokenId)}();
 
         /// @dev Announce delivery of spam bucket.
-        emit SpamIssued(_tokenId, poundAddress);
+        emit SpamIssued(_tokenId, address(spam));
+
+        /// @dev Clear the hotslots.
+        delete deliveringTokenId;
+        delete deliveringTo;
     }
 
     function _tokenHash(uint256 _tokenId) internal pure returns (bytes32) {

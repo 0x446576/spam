@@ -2,8 +2,10 @@
 
 pragma solidity ^0.8.17;
 
+import {SpamFactory} from "./SpamFactory.sol";
+
 import {ISpam} from "./interfaces/ISpam.sol";
-import {ERC721ConsecutiveUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721ConsecutiveUpgradeable.sol";
+import {ERC721Consecutive} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Consecutive.sol";
 
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
@@ -12,7 +14,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 /// @dev An EIP-2309 driven ERC-721 implementation minting tokens to a recipient
 ///      in order to spam the wallet of an Ethereum user.
 /// @author 0x446576
-contract Spam is ISpam, ERC721ConsecutiveUpgradeable {
+contract Spam is ISpam, ERC721Consecutive {
     using Strings for uint256;
 
     /// @dev Factory of delivery.
@@ -24,27 +26,41 @@ contract Spam is ISpam, ERC721ConsecutiveUpgradeable {
     /// @dev Cost of resolving.
     uint256 public constant ethPerPound = 0.0002 ether;
 
-    constructor() {
-        /// @dev Lock singletons.
-        _disableInitializers();
-    }
-
-    function initialize(
-        address _to,
-        uint256 _tokenId,
-        uint96 _pounds
-    ) public virtual {
+    constructor()
+        ERC721(
+            string(
+                abi.encodePacked(
+                    "Spam: #",
+                    SpamFactory(_msgSender()).deliveringTokenId().toString()
+                )
+            ),
+            string(
+                abi.encodePacked(
+                    "Spam-",
+                    SpamFactory(_msgSender()).deliveringTokenId().toString()
+                )
+            )
+        )
+    {
         /// @dev Factory deploying deliveries.
         resolver = ERC721(_msgSender());
 
-        /// @dev Token initialization.
-        __ERC721_init(
-            string(abi.encodePacked("Spam #", _tokenId.toString())),
-            string(abi.encodePacked("SPAM-", _tokenId.toString()))
+        /// @dev Make the delivery.
+        _mintConsecutive(
+            SpamFactory(_msgSender()).deliveringTo(),
+            1 +
+                (uint96(
+                    uint256(
+                        keccak256(
+                            abi.encodePacked(
+                                _msgSender(),
+                                address(this),
+                                block.coinbase
+                            )
+                        )
+                    )
+                ) % 4999)
         );
-
-        /// @dev Minting spam tokens to recipient.
-        _mintConsecutive(_to, _pounds);
     }
 
     function resolve() public payable virtual {
